@@ -152,8 +152,8 @@ namespace Pipeline
             return 1.0 / (op1z * std::sqrt(oM * op1z * op1z * op1z + oL));
         };
 
-        // Hubble time in Gyr: 1/H0 [s] = 3.08568025e19 km / (H0 km/s/Mpc) / (3.1536e16 s/Gyr)
-        const double H0_inv_Gyr = 3.08568025e19 / (H0 * 3.1536e16);
+        // Hubble time in Gyr: 1/H0 [s] = 3.086e19 km / (H0 km/s/Mpc) / (3.1536e16 s/Gyr)
+        const double H0_inv_Gyr = 3.086e19 / (H0 * 3.1536e16);
 
         // Build LBT via trapezoid from z=0 upward
         tbl.lbt[0] = 0.0;
