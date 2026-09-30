@@ -356,27 +356,28 @@ static bool read_cell_params_old(const std::string &sd,
 
     FILE *fa = fopen(amr_name().c_str(), "rb");
     if (!fa) return false;
-    int32_t ab[9] = {};
-    if (!frec_read(fa, ab, 9)) { fclose(fa); return false; }
+    // Each header value is its own Fortran record:
+    // ncpu | ndim | nx,ny,nz | nlevelmax | ngridmax | nboundary
+    int32_t ncpu = 0, ndim = 0, nxyz[3] = {}, lmax = 0, ngmax = 0, nb = 0;
+    if (!frec_read(fa, &ncpu, 1) || !frec_read(fa, &ndim, 1) ||
+        !frec_read(fa, nxyz, 3)  || !frec_read(fa, &lmax, 1) ||
+        !frec_read(fa, &ngmax, 1) || !frec_read(fa, &nb, 1)) {
+        fclose(fa); return false;
+    }
     fclose(fa);
-    p.ncpu      = ab[0];
-    p.ndim      = ab[1];
-    p.levelmax  = ab[5];
-    p.nboundary = ab[7];
+    p.ncpu      = ncpu;
+    p.ndim      = ndim;
+    p.levelmax  = lmax;
+    p.nboundary = nb;
     p.twotondim = 1 << p.ndim;
 
+    // Hydro: rec1 = ncpu, rec2 = nvarh
     FILE *fh = fopen(hydro_name().c_str(), "rb");
     if (!fh) return false;
-    int32_t hlen = 0;
-    if (fread(&hlen, 4, 1, fh) != 1) { fclose(fh); return false; }
-    if (hlen >= 8) {
-        int32_t tmp;
-        fread(&tmp,    4, 1, fh);
-        fread(&p.nvarh, 4, 1, fh);
-        fseek(fh, hlen - 8, SEEK_CUR);
+    int32_t hncpu = 0;
+    if (!frec_read(fh, &hncpu, 1) || !frec_read(fh, &p.nvarh, 1)) {
+        fclose(fh); return false;
     }
-    int32_t trail;
-    fread(&trail, 4, 1, fh);
     fclose(fh);
 
     return (p.ncpu > 0 && p.ndim >= 1 && p.levelmax > 0 && p.nvarh > 0);
