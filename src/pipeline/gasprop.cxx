@@ -93,7 +93,8 @@ struct OldCellRec {
     double  dx;
     int32_t level;
     int32_t nvar;
-    double  var[6];  // rho, px, py, pz, etot, metal (in code units)
+    double  var[6];  // rho, vx, vy, vz, P, metal (primitive vars, code units)
+    double  pot;     // phi from grav_XXXXX.outYYYYY (same as HDF5 "potential")
 };
 
 // ---------------------------------------------------------------------------
@@ -388,6 +389,7 @@ static bool read_cell_params_old(const std::string &sd,
 static std::vector<OldCellRec> read_cpu_cells_old(
     const std::string &fa_name,
     const std::string &fh_name,
+    const std::string &fg_name,
     int32_t icpu,
     const CellParamsOld &p)
 {
@@ -395,6 +397,19 @@ static std::vector<OldCellRec> read_cpu_cells_old(
     if (!fa) return {};
     FILE *fh = fopen(fh_name.c_str(), "rb");
     if (!fh) { fclose(fa); return {}; }
+    // Gravity file is optional: without it the potential stays 0 (no bound gas).
+    FILE *fg = fopen(fg_name.c_str(), "rb");
+    if (!fg) LOG() << "[gasprop] WARNING: cannot open " << fg_name << " (potential = 0)";
+    int32_t nvarg = 0;
+    if (fg) {
+        // grav header: ncpu | nvar (=1+ndim) | nlevelmax | nboundary
+        int32_t gncpu = 0;
+        if (!frec_read(fg, &gncpu, 1) || !frec_read(fg, &nvarg, 1)) {
+            fclose(fg); fg = nullptr; nvarg = 0;
+        } else {
+            frec_skip(fg); frec_skip(fg);
+        }
+    }
 
     const int32_t ndomain   = p.ncpu + p.nboundary;
     const int32_t twotondim = p.twotondim;
@@ -425,9 +440,10 @@ static std::vector<OldCellRec> read_cpu_cells_old(
         for (int32_t j = 0; j < ndomain; ++j)
             if (get_ng(j, lev) > max_ng) max_ng = get_ng(j, lev);
 
-    if (max_ng == 0) { fclose(fa); fclose(fh); return {}; }
+    if (max_ng == 0) { fclose(fa); fclose(fh); if (fg) fclose(fg); return {}; }
 
     std::vector<double> xg_tmp((size_t)max_ng);
+    std::vector<double> phi_arr((size_t)twotondim * (size_t)max_ng, 0.0);
     std::vector<double> xg[3];
     for (int d = 0; d < 3; ++d) xg[d].resize((size_t)max_ng);
     std::vector<std::vector<int32_t>> son_arr(
@@ -480,8 +496,20 @@ static std::vector<OldCellRec> read_cpu_cells_old(
             }
 
             frec_skip(fh); frec_skip(fh);
+            if (fg) { frec_skip(fg); frec_skip(fg); }
 
             if (ngrida > 0) {
+                // gravity: per ind, nvarg records (ivar 0 = phi)
+                if (fg) {
+                    for (int ind = 0; ind < twotondim; ++ind)
+                        for (int iv = 0; iv < nvarg; ++iv) {
+                            if (own && iv == 0)
+                                frec_read(fg, &phi_arr[(size_t)ind*(size_t)max_ng],
+                                          ngrida);
+                            else
+                                frec_skip(fg);
+                        }
+                }
                 if (own) {
                     for (int ind = 0; ind < twotondim; ++ind)
                         for (int iv = 0; iv < nvarh; ++iv)
@@ -500,6 +528,7 @@ static std::vector<OldCellRec> read_cpu_cells_old(
                             c.nvar  = nvar_use;
                             for (int iv = 0; iv < nvar_use; ++iv)
                                 c.var[iv] = hd_arr[(size_t)ind][(size_t)iv][(size_t)k];
+                            c.pot = phi_arr[(size_t)ind*(size_t)max_ng + (size_t)k];
                             result.push_back(c);
                         }
                     }
@@ -511,6 +540,7 @@ static std::vector<OldCellRec> read_cpu_cells_old(
     }
 
     fclose(fa); fclose(fh);
+    if (fg) fclose(fg);
     return result;
 }
 
@@ -560,52 +590,25 @@ static CellPhys extract_cell_hdf(
     return p;
 }
 
+// The raw hydro/grav files store primitive variables (rho, v, P, Z) and phi,
+// identical in value and unit to the HDF5 cell file, so reuse extract_cell_hdf.
 static CellPhys extract_cell_old(
     const OldCellRec &c,
     double xc, double yc, double zc,
     double vxc, double vyc, double vzc,
     const CosmoInfo &cosmo, double mu_mean)
 {
-    CellPhys p;
-    const double kpc = cosmo.kpc_per_code;
-    p.x_kpc = (c.x-xc)*kpc; p.y_kpc = (c.y-yc)*kpc; p.z_kpc = (c.z-zc)*kpc;
-    p.d_kpc = std::sqrt(p.x_kpc*p.x_kpc + p.y_kpc*p.y_kpc + p.z_kpc*p.z_kpc);
-
-    double dx_k = c.dx * kpc;
-    p.vol_kpc3  = dx_k*dx_k*dx_k;
-
-    const double v2u  = cosmo.unit_l*cosmo.unit_l/cosmo.unit_t/cosmo.unit_t;
-    const double vkms = std::sqrt(v2u)*1e-5;
-
-    double rho_c = (c.nvar > 0 && c.var[0] > 0.0) ? c.var[0] : 1e-100;
-    double vx_c  = (c.nvar > 1) ? c.var[1]/rho_c : 0.0;
-    double vy_c  = (c.nvar > 2) ? c.var[2]/rho_c : 0.0;
-    double vz_c  = (c.nvar > 3) ? c.var[3]/rho_c : 0.0;
-    double e_tot = (c.nvar > 4) ? c.var[4]/rho_c : 0.0;
-    double e_kin = 0.5*(vx_c*vx_c + vy_c*vy_c + vz_c*vz_c);
-    double Prho  = (gamma_gas-1.0)*std::max(e_tot - e_kin, 0.0);
-
-    p.rho_cgs   = rho_c * cosmo.unit_d;
-    p.nH_cc     = p.rho_cgs * X_H / mH_cgs;
-    p.mass_msun = rho_c * c.dx*c.dx*c.dx * cosmo.Msun_per_code;
-    p.metal     = (c.nvar > 5) ? c.var[5]/rho_c : 0.0;
-    p.vx_kms    = vx_c*vkms - vxc;
-    p.vy_kms    = vy_c*vkms - vyc;
-    p.vz_kms    = vz_c*vkms - vzc;
-    p.T_K       = Prho * v2u * mu_mean * mH_cgs / kB_cgs;
-    if (p.T_K < 10.0) p.T_K = 10.0;
-    p.KE_kms2   = 0.5*(p.vx_kms*p.vx_kms + p.vy_kms*p.vy_kms + p.vz_kms*p.vz_kms);
-    p.UE_kms2   = Prho/(gamma_gas-1.0)*v2u*1e-10;
-    p.PE_kms2   = 0.0;  // no stored potential in old Ramses format
-    p.vdot      = p.x_kpc*p.vx_kms + p.y_kpc*p.vy_kms + p.z_kpc*p.vz_kms;
-
-    double h    = cosmo.H0/100.0;
-    double den2 = p.nH_cc*mH_cgs/Msun_cgs*std::pow(kpc_cm,3.0)/(h*h)/1e10;
-    if (den2 < 1e-100) den2 = 1e-100;
-    p.cold      = (p.T_K < std::pow(10.0, 6.0+0.25*std::log10(den2)))
-               || (p.nH_cc > 10.0);
-    p.celltype  = -1;
-    return p;
+    CellRec r;
+    r.x = c.x; r.y = c.y; r.z = c.z;
+    r.level = c.level;
+    r.rho   = (float)c.var[0];
+    r.vx    = (float)c.var[1];
+    r.vy    = (float)c.var[2];
+    r.vz    = (float)c.var[3];
+    r.pres  = (float)c.var[4];
+    r.metal = (float)c.var[5];
+    r.pot   = (float)c.pot;
+    return extract_cell_hdf(r, xc, yc, zc, vxc, vyc, vzc, cosmo, mu_mean);
 }
 
 // ---------------------------------------------------------------------------
@@ -979,7 +982,7 @@ GasPropResult compute_gasprop(
     // ===================================================================
     // Old Ramses streaming path (newramses=0)
     // Uses Hilbert-key domain lookup from info_XXXXX.txt.
-    // No stored gravitational potential; PE=0, no ISM/CGM classification.
+    // Potential phi is read from grav_XXXXX.outYYYYY (same as HDF5 "potential").
     // ===================================================================
     LOG() << "[gasprop] newramses=0: streaming from per-CPU binary files";
 
@@ -997,6 +1000,12 @@ GasPropResult compute_gasprop(
     auto hydro_name = [&](int32_t cpu) {
         std::ostringstream o;
         o << snap_dir() << "/hydro_" << std::setw(5) << std::setfill('0') << snap
+          << ".out" << std::setw(5) << std::setfill('0') << cpu;
+        return o.str();
+    };
+    auto grav_name = [&](int32_t cpu) {
+        std::ostringstream o;
+        o << snap_dir() << "/grav_" << std::setw(5) << std::setfill('0') << snap
           << ".out" << std::setw(5) << std::setfill('0') << cpu;
         return o.str();
     };
@@ -1054,7 +1063,8 @@ GasPropResult compute_gasprop(
 
         int32_t icpu = ci + 1;
         std::vector<OldCellRec> cpu_cells =
-            read_cpu_cells_old(amr_name(icpu), hydro_name(icpu), icpu, cp);
+            read_cpu_cells_old(amr_name(icpu), hydro_name(icpu), grav_name(icpu),
+                               icpu, cp);
         if (cpu_cells.empty()) {
             // Still need to decrement remaining so finalization fires correctly
             for (int32_t gi : gals)
