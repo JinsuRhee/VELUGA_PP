@@ -681,7 +681,7 @@ BPropResult compute_bprop(
 
             // Clump classification
             if (do_clump) {
-                const double mt = (*cat_mtot_ptr)[(size_t)gi]*msun;
+                const double mt = (*cat_mtot_ptr)[(size_t)gi];  // catalog Mass_tot is already in Msun
                 const double s0 = res.sfr[(size_t)(gi*n_sfr+0)];
                 res.isclump[(size_t)gi] = (s0>mt/(vh.sfr_t[0]*1e9)*vh.pp_clump_mfrac) ? 1 : -1;
             }
