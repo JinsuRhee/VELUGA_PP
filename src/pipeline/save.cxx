@@ -192,11 +192,11 @@ void save_result(
         return std::vector<double>(n_gal, NULLD);
     };
 
-    auto mass_tot = get_f64("mass_tot");
+    auto mass_tot = get_f64("Mass_tot");
     auto r_half   = get_f64("R_HalfMass");
     auto mvir     = get_f64("Mvir");
     auto rvir     = get_f64("Rvir");
-    auto m200     = get_f64("mass_200crit");
+    auto m200     = get_f64("Mass_200crit");
     auto r200     = get_f64("R_200crit");
 
     write_d(fid, "Mass_tot",     mass_tot.data(), (hsize_t)n_gal);
