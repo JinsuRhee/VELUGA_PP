@@ -655,7 +655,8 @@ BPropResult compute_bprop(
             for (int32_t ai=0; ai<n_mag_ap; ++ai) {
                 const bool   use_mb  = mag_use_mb[(size_t)ai];
                 const double dval    = vh.mag_r[(size_t)ai];
-                const double dsz_kpc = use_mb ? -1.0 : dval*rhalf_kpc;
+                // mag_r<0: luminosity from all members, SB area uses a 5*R_half radius.
+                const double dsz_kpc = use_mb ? 5.0*rhalf_kpc : dval*rhalf_kpc;
                 const size_t base    = (size_t)(gi*n_mag_ap*n_flux+ai*n_flux);
                 for (int32_t fi=0; fi<n_flux; ++fi) {
                     const int bi = band_idx[(size_t)fi]; if (bi<0) continue;
